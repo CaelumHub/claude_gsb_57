@@ -154,6 +154,75 @@ def amount():
 ''',
     },
     {
+        "name": "vesting",
+        "title": "分阶段解锁 (Vesting)",
+        "category": "金融",
+        "description": "资金按区块高度分阶段解锁：从起始高度起，每隔 N 个区块解锁 1/M 额度，"
+                       "受益人每次只能提取已解锁的部分，无法一次性取走全部资金。",
+        "constructor": [
+            {"name": "beneficiary", "type": "address", "desc": "受益人地址"},
+            {"name": "start_height", "type": "int", "desc": "开始解锁的区块高度"},
+            {"name": "stage_interval", "type": "int", "desc": "每个阶段间隔的区块数"},
+            {"name": "total_stages", "type": "int", "desc": "解锁阶段总数"},
+        ],
+        "functions": [
+            {"name": "deposit", "desc": "存入资金（需附带 value）", "params": []},
+            {"name": "release", "desc": "受益人提取当前已解锁额度", "params": []},
+            {"name": "vested", "desc": "查询当前高度累计已解锁额度", "params": []},
+            {"name": "releasable", "desc": "查询当前可提取额度", "params": []},
+            {"name": "status", "desc": "查询解锁进度汇总", "params": []},
+        ],
+        "source": '''# 分阶段解锁（Vesting）合约模板
+# 资金锁在合约里，从 start_height 起每 stage_interval 个区块解锁 1/total_stages，
+# 受益人只能提走"已解锁但未提取"的差额，无法提前一次性取出。
+def init(beneficiary, start_height, stage_interval, total_stages):
+    require(state.get("owner") is None, "已初始化")
+    require(int(stage_interval) > 0, "阶段间隔必须为正整数")
+    require(int(total_stages) > 0, "阶段总数必须为正整数")
+    state["owner"] = msg.sender
+    state["beneficiary"] = beneficiary
+    state["start_height"] = int(start_height)
+    state["stage_interval"] = int(stage_interval)
+    state["total_stages"] = int(total_stages)
+    state["total"] = 0      # 累计存入
+    state["released"] = 0   # 累计已提取
+    emit("VestingCreated", beneficiary=beneficiary,
+         start=int(start_height), interval=int(stage_interval),
+         stages=int(total_stages))
+
+def deposit():
+    require(msg.value > 0, "存入金额必须为正")
+    state["total"] = state.get("total", 0) + msg.value
+    emit("Deposited", by=msg.sender, amount=msg.value, total=state["total"])
+
+def vested():
+    # 当前高度累计已解锁的额度（含已提取部分）
+    if block_height < state["start_height"]:
+        return 0
+    passed = (block_height - state["start_height"]) // state["stage_interval"] + 1
+    if passed >= state["total_stages"]:
+        return state["total"]  # 最后一阶段精确解锁全部，避免浮点零头
+    return state["total"] * passed // state["total_stages"]
+
+def releasable():
+    return vested() - state["released"]
+
+def release():
+    require(msg.sender == state["beneficiary"], "只有受益人可提取")
+    amount = releasable()
+    require(amount > 0, "当前没有可提取的额度")
+    state["released"] = state["released"] + amount
+    transfer(state["beneficiary"], amount)
+    emit("Released", to=state["beneficiary"], amount=amount,
+         released=state["released"])
+
+def status():
+    return {"beneficiary": state["beneficiary"], "height": block_height,
+            "total": state["total"], "vested": vested(),
+            "released": state["released"], "releasable": releasable()}
+''',
+    },
+    {
         "name": "auction",
         "title": "拍卖合约",
         "category": "金融",
