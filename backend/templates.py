@@ -237,6 +237,100 @@ def withdraw():
 ''',
     },
     {
+        "name": "vesting",
+        "title": "分阶段解锁 (Vesting)",
+        "category": "金融",
+        "description": "资金按区块高度分多期解锁给受益人：每到一个解锁高度，对应份额才允许提取，无法提前一次性取出。",
+        "constructor": [
+            {"name": "beneficiary", "type": "address", "desc": "受益人地址"},
+            {"name": "unlock_heights", "type": "list", "desc": "各期解锁高度列表，如 [100,200,300]"},
+            {"name": "unlock_amounts", "type": "list", "desc": "各期解锁金额列表，如 [300,300,400]"},
+        ],
+        "functions": [
+            {"name": "deposit", "desc": "出资人按解锁计划存入资金（需附带 value）", "params": []},
+            {"name": "release", "desc": "受益人提取当前高度已解锁的全部份额", "params": []},
+            {"name": "releasable", "desc": "查询当前高度可提取但尚未提取的金额", "params": []},
+            {"name": "schedule", "desc": "查询完整的分期解锁计划与状态", "params": []},
+        ],
+        "source": '''# 分阶段解锁合约 (Vesting)
+def init(beneficiary, unlock_heights, unlock_amounts):
+    require(state.get("owner") is None, "合约已初始化")
+    heights = list(unlock_heights)
+    amounts = list(unlock_amounts)
+    n = len(heights)
+    require(n > 0, "至少需要一个解锁阶段")
+    require(len(amounts) == n, "解锁高度与金额数量不一致")
+    total = 0
+    prev = -1
+    for i in range(n):
+        h = int(heights[i])
+        a = int(amounts[i])
+        require(h >= 0, "解锁高度不能为负")
+        require(h > prev, "解锁高度必须严格递增")
+        require(a > 0, "每期解锁金额必须为正")
+        prev = h
+        total += a
+        state["tr_" + str(i)] = [h, a, False]
+    state["owner"] = msg.sender
+    state["beneficiary"] = beneficiary
+    state["stages"] = n
+    state["total_locked"] = total
+    state["deposited"] = 0
+    state["released"] = 0
+    emit("VestingScheduled", beneficiary=beneficiary, stages=n, total=total)
+
+def deposit():
+    require(state.get("deposited", 0) < state["total_locked"], "解锁资金已全部存满")
+    state["deposited"] = state.get("deposited", 0) + msg.value
+    require(state["deposited"] <= state["total_locked"], "存入金额超过解锁计划总额")
+    emit("Deposited", by=msg.sender, amount=msg.value,
+         deposited=state["deposited"])
+
+def _releasable():
+    available = 0
+    n = state["stages"]
+    for i in range(n):
+        tr = state["tr_" + str(i)]
+        if not tr[2] and block_height >= tr[0]:
+            available += tr[1]
+    # 合约实际到账可能少于计划总额，可提取金额不超过可用余额
+    pending = state["deposited"] - state["released"]
+    if available > pending:
+        available = pending
+    return available
+
+def release():
+    require(msg.sender == state["beneficiary"], "只有受益人可提取")
+    amount = _releasable()
+    require(amount > 0, "当前没有已解锁的份额")
+    n = state["stages"]
+    for i in range(n):
+        tr = state["tr_" + str(i)]
+        if not tr[2] and block_height >= tr[0]:
+            tr[2] = True
+            state["tr_" + str(i)] = tr
+            emit("TrancheUnlocked", stage=i + 1, height=tr[0], amount=tr[1])
+    state["released"] = state["released"] + amount
+    transfer(state["beneficiary"], amount)
+    emit("Released", to=state["beneficiary"], amount=amount,
+         released=state["released"])
+
+def releasable():
+    return _releasable()
+
+def schedule():
+    return {
+        "beneficiary": state["beneficiary"],
+        "stages": state["stages"],
+        "total_locked": state["total_locked"],
+        "deposited": state["deposited"],
+        "released": state["released"],
+        "current_height": block_height,
+        "tranches": [state["tr_" + str(i)] for i in range(state["stages"])],
+    }
+''',
+    },
+    {
         "name": "counter",
         "title": "计数器",
         "category": "基础",
